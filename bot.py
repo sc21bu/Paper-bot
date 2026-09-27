@@ -9,7 +9,7 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical.crypto import CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 API_KEY = os.environ["ALPACA_KEY"]
 API_SECRET = os.environ["ALPACA_SECRET"]
@@ -23,12 +23,15 @@ RSI_LEN = 7
 RSI_LONG = 40
 RSI_LONG_EXIT = 35
 ADX_LEN = 14
-ADX_MIN = 0.0        # 0 = disabled, same as your default
+ADX_MIN = 0.0
 VOL_LEN = 20
-VOL_MIN_PCT = 0.0    # 0 = disabled
+VOL_MIN_PCT = 0.0
 ATR_MULT = 1.5
 MAX_DROP_PCT = 2.0
-TRADE_NOTIONAL = 100  # dollars per buy
+TRADE_NOTIONAL = 5000
+
+BAR_TIMEFRAME = TimeFrame(15, TimeFrameUnit.Minute)   # 15-minute candles
+BAR_LOOKBACK = 200                                     # ~2 days of 15-min bars
 
 trading_client = TradingClient(API_KEY, API_SECRET, paper=True)
 data_client = CryptoHistoricalDataClient(API_KEY, API_SECRET)
@@ -37,8 +40,8 @@ data_client = CryptoHistoricalDataClient(API_KEY, API_SECRET)
 def check_and_trade(symbol):
     bars_request = CryptoBarsRequest(
         symbol_or_symbols=symbol,
-        timeframe=TimeFrame.Minute,
-        limit=100
+        timeframe=BAR_TIMEFRAME,
+        limit=BAR_LOOKBACK
     )
     bars = data_client.get_crypto_bars(bars_request).df
 
@@ -67,7 +70,6 @@ def check_and_trade(symbol):
     last_vol, last_vol_avg = volume.iloc[-1], vol_avg.iloc[-1]
     prev_close, prev_fast, prev_rsi = close.iloc[-2], fast_ema.iloc[-2], rsi.iloc[-2]
 
-    # ---- Entry conditions (long only) ----
     ema_long_state = last_fast > last_slow
     rsi_crossover = prev_rsi < RSI_LONG <= last_rsi
     price_crossover = prev_close < prev_fast and last_close > last_fast
@@ -77,7 +79,6 @@ def check_and_trade(symbol):
 
     raw_long = ema_long_state and rsi_long_trigger and trend_strong and vol_ok
 
-    # ---- Current position, read directly from Alpaca ----
     position_qty, entry_price = 0.0, None
     try:
         position = trading_client.get_open_position(symbol.replace("/", ""))
@@ -88,7 +89,6 @@ def check_and_trade(symbol):
 
     in_position = position_qty > 0
 
-    # ---- Exit conditions ----
     stop_loss = (entry_price - last_atr * ATR_MULT) if entry_price else None
     bar_move_pct = (last_close - prev_close) / prev_close * 100
 
@@ -99,7 +99,6 @@ def check_and_trade(symbol):
     )
     exit_long = in_position and (hard_stop or crash_exit or trend_exit)
 
-    # ---- Act ----
     if raw_long and not in_position:
         print(f"{symbol}: buy signal")
         trading_client.submit_order(MarketOrderRequest(
